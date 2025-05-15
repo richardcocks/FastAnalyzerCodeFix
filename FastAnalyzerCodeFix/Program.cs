@@ -21,9 +21,7 @@ public static class Program
 
 		Console.WriteLine("Loading solution...");
 		var solution = await workspace.OpenSolutionAsync(solutionPath);
-		var fixedSolution = await CodeFixApplier.ApplyAllDiagnosticsFixesAsync(solution, diagnosticIds, 10, CancellationToken.None);
-		workspace.TryApplyChanges(fixedSolution);
-
+		await CodeFixApplier.ApplyFixesPerProjectAsync(solution, diagnosticIds, CancellationToken.None);
 		Console.WriteLine("Done.");
 	}
 }
