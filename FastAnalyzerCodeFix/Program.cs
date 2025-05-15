@@ -17,15 +17,14 @@ public static class Program
 		string solutionPath = args[0];
 		string[] diagnosticIds = args[1].Split(',');
 
-		// Register MSBuild
 		MSBuildLocator.RegisterDefaults();
 		var workspace = MSBuildWorkspace.Create();
 
 		Console.WriteLine("Loading solution...");
 		var solution = await workspace.OpenSolutionAsync(solutionPath);
-		var fixedSolution = await CodeFixApplier.ApplyAllDiagnosticsFixesAsync(solution,  diagnosticIds,10, CancellationToken.None);
+		var fixedSolution = await CodeFixApplier.ApplyAllDiagnosticsFixesAsync(solution, diagnosticIds, 10, CancellationToken.None);
 		workspace.TryApplyChanges(fixedSolution);
-		
+
 		Console.WriteLine("Done.");
 	}
 }
