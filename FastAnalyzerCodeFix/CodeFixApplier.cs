@@ -1,12 +1,11 @@
-﻿using System.Collections;
+﻿using System.Collections.Immutable;
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.Diagnostics;
-using System.Collections.Immutable;
-using System.Reflection;
-using Microsoft.CodeAnalysis.MSBuild;
 
+namespace FastAnalyzerCodeFix;
 
 public static class CodeFixApplier
 {
@@ -39,95 +38,124 @@ public static class CodeFixApplier
             }
         }
     }
-private static async Task<Project?> ApplyFixesToProjectAsync(
-    Project project,
-    HashSet<string> diagnosticIds,
-    CancellationToken cancellationToken)
-{
-    var analyzers = project.AnalyzerReferences.SelectMany(r => r.GetAnalyzers(project.Language)).ToImmutableArray();
-    if (!analyzers.Any()) return project;
 
-    var compilation = await project.GetCompilationAsync(cancellationToken);
-    var compilationWithAnalyzers = compilation.WithAnalyzers(analyzers);
-
-    var diagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync(cancellationToken);
-    var relevantDiagnostics = diagnostics
-        .Where(d => diagnosticIds.Contains(d.Id) && d.Location.IsInSource)
-        .OrderBy(d => d.Location.SourceSpan.Start)
-        .ToList();
-
-    if (!relevantDiagnostics.Any()) return project;
-
-    var providers = LoadCodeFixProviders(project.AnalyzerReferences);
-
-    var currentSolution = project.Solution;
-    bool fixApplied = false;
-
-    foreach (var diagnostic in relevantDiagnostics)
+    private static async Task<Project?> ApplyFixesToProjectAsync(
+        Project project,
+        HashSet<string> diagnosticIds,
+        CancellationToken cancellationToken,
+        int maxIterations = 10)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var doc = currentSolution.GetDocument(diagnostic.Location.SourceTree);
-        if (doc == null) continue;
-
-        foreach (var provider in providers)
+        var providers = LoadCodeFixProviders(project.AnalyzerReferences);
+        if (providers.Count == 0)
         {
-            if (!provider.FixableDiagnosticIds.Contains(diagnostic.Id)) continue;
+            Console.WriteLine($"No CodeFixProviders found for {project.Name}");
+            return project;
+        }
 
-            var actions = new List<CodeAction>();
-            var context = new CodeFixContext(
-                doc,
-                diagnostic,
-                (a, _) => actions.Add(a),
-                cancellationToken);
+        var currentSolution = project.Solution;
+        var originalProject = project;
+        bool anyFixesApplied = false;
 
-            await provider.RegisterCodeFixesAsync(context);
+        for (int iteration = 1; iteration <= maxIterations; iteration++)
+        {
+            Console.WriteLine($"  Iteration {iteration} for {project.Name}");
 
-            var action = actions.FirstOrDefault();
-            if (action == null) continue;
+            var compilation = await currentSolution.GetProject(project.Id)!.GetCompilationAsync(cancellationToken);
+            var analyzers = project.AnalyzerReferences.SelectMany(r => r.GetAnalyzers(project.Language))
+                .ToImmutableArray();
+            var compilationWithAnalyzers = compilation!.WithAnalyzers(analyzers);
 
-            var operations = await action.GetOperationsAsync(cancellationToken);
-            foreach (var op in operations)
+            var diagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync(cancellationToken);
+            var relevantDiagnostics = diagnostics
+                .Where(d => diagnosticIds.Contains(d.Id) && d.Location.IsInSource)
+                .OrderBy(d => d.Location.SourceSpan.Start)
+                .ToList();
+
+            if (!relevantDiagnostics.Any())
             {
-                if (op is ApplyChangesOperation applyChange)
+                Console.WriteLine("    No more relevant diagnostics.");
+                break;
+            }
+
+            Console.WriteLine($"    Found {relevantDiagnostics.Count} fixable diagnostics.");
+
+            bool fixesAppliedThisRound = false;
+
+            foreach (var diagnostic in relevantDiagnostics)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var doc = currentSolution.GetDocument(diagnostic.Location.SourceTree);
+                if (doc == null) continue;
+
+                foreach (var provider in providers)
                 {
-                    currentSolution = applyChange.ChangedSolution;
-                    fixApplied = true;
-                    break;
+                    if (!provider.FixableDiagnosticIds.Contains(diagnostic.Id)) continue;
+
+                    var actions = new List<CodeAction>();
+                    var context = new CodeFixContext(
+                        doc,
+                        diagnostic,
+                        (a, _) => actions.Add(a),
+                        cancellationToken);
+
+                    await provider.RegisterCodeFixesAsync(context);
+                    var action = actions.FirstOrDefault();
+                    if (action == null) continue;
+
+                    var operations = await action.GetOperationsAsync(cancellationToken);
+                    foreach (var op in operations)
+                    {
+                        if (op is ApplyChangesOperation applyChange)
+                        {
+                            currentSolution = applyChange.ChangedSolution;
+                            fixesAppliedThisRound = true;
+                            anyFixesApplied = true;
+
+                            Console.WriteLine($"    ✓ Applied fix for {diagnostic.Id} in {doc.Name}");
+                            break;
+                        }
+                    }
+
+                    break; // Only use first matching provider
                 }
             }
 
-            break; // Only one provider per diagnostic
+            if (!fixesAppliedThisRound)
+            {
+                Console.WriteLine("    No fixes applied this round.");
+                break;
+            }
         }
+
+        return anyFixesApplied ? currentSolution.GetProject(project.Id) : originalProject;
     }
 
-    return fixApplied ? currentSolution.GetProject(project.Id) : project;
-}
 
-private static List<CodeFixProvider> LoadCodeFixProviders(IEnumerable<AnalyzerReference> analyzerReferences)
-{
-    var providers = new List<CodeFixProvider>();
-
-    foreach (var reference in analyzerReferences.OfType<AnalyzerFileReference>())
+    private static List<CodeFixProvider> LoadCodeFixProviders(IEnumerable<AnalyzerReference> analyzerReferences)
     {
-        try
-        {
-            var assembly = Assembly.LoadFrom(reference.FullPath);
+        var providers = new List<CodeFixProvider>();
 
-            var fixProviders = assembly.GetTypes()
-                .Where(t => typeof(CodeFixProvider).IsAssignableFrom(t) && !t.IsAbstract && t.GetConstructor(Type.EmptyTypes) != null)
-                .Select(t => (CodeFixProvider)Activator.CreateInstance(t)!)
-                .ToList();
-
-            providers.AddRange(fixProviders);
-        }
-        catch (Exception ex)
+        foreach (var reference in analyzerReferences.OfType<AnalyzerFileReference>())
         {
-            Console.WriteLine($"Failed to load CodeFixProvider from {reference.FullPath}: {ex.Message}");
+            try
+            {
+                var assembly = Assembly.LoadFrom(reference.FullPath);
+
+                var fixProviders = assembly.GetTypes()
+                    .Where(t => typeof(CodeFixProvider).IsAssignableFrom(t) && !t.IsAbstract &&
+                                t.GetConstructor(Type.EmptyTypes) != null)
+                    .Select(t => (CodeFixProvider)Activator.CreateInstance(t)!)
+                    .ToList();
+
+                providers.AddRange(fixProviders);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load CodeFixProvider from {reference.FullPath}: {ex.Message}");
+            }
         }
+
+        return providers;
     }
-
-    return providers;
-}
-
 }
