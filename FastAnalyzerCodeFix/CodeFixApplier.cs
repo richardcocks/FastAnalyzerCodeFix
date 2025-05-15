@@ -127,4 +127,97 @@ public static class CodeFixApplier
 
         return providers;
     }
+    public static async Task<Solution> ApplyAllDiagnosticsFixesAsync(
+    Solution solution,
+    IEnumerable<string> targetDiagnosticIds,
+    int maxIterations = 10,
+    CancellationToken cancellationToken = default)
+{
+    var diagnosticIdSet = targetDiagnosticIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var newSolution = solution;
+
+    var providersCache = new Dictionary<ProjectId, List<CodeFixProvider>>();
+
+    for (var iteration = 1; iteration <= maxIterations; iteration++)
+    {
+        var anyFixApplied = false;
+        int fixesThisIteration = 0;
+
+        Console.WriteLine($"Starting iteration {iteration}...");
+
+        foreach (var project in newSolution.Projects)
+        {
+            if (!providersCache.TryGetValue(project.Id, out var providers))
+            {
+                providers = LoadCodeFixProviders(project.AnalyzerReferences);
+                providersCache[project.Id] = providers;
+            }
+
+            var analyzers = project.AnalyzerReferences.SelectMany(r => r.GetAnalyzers(project.Language)).ToImmutableArray();
+            if (!analyzers.Any()) continue;
+
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            var compilationWithAnalyzers = compilation.WithAnalyzers(analyzers);
+            var diagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
+
+            var relevantDiagnostics = diagnostics
+                .Where(d => diagnosticIdSet.Contains(d.Id) && d.Location.IsInSource)
+                .ToList();
+
+            if (!relevantDiagnostics.Any()) continue;
+
+            var projectSolution = newSolution;
+
+            foreach (var diagnostic in relevantDiagnostics)
+            {
+                var doc = projectSolution.GetDocument(diagnostic.Location.SourceTree);
+                if (doc == null) continue;
+
+                foreach (var provider in providers)
+                {
+                    if (!provider.FixableDiagnosticIds.Contains(diagnostic.Id)) continue;
+
+                    var actions = new List<CodeAction>();
+                    var context = new CodeFixContext(
+                        doc,
+                        diagnostic,
+                        (a, _) => actions.Add(a),
+                        cancellationToken);
+
+                    await provider.RegisterCodeFixesAsync(context);
+
+                    var action = actions.FirstOrDefault();
+                    if (action == null) continue;
+
+                    var operations = await action.GetOperationsAsync(cancellationToken);
+                    foreach (var op in operations)
+                    {
+                        if (op is ApplyChangesOperation applyChange)
+                        {
+                            newSolution = applyChange.ChangedSolution;
+                            anyFixApplied = true;
+                            fixesThisIteration++;
+                            break;
+                        }
+                    }
+
+                    if (anyFixApplied) break;
+                }
+
+                if (anyFixApplied) break;
+            }
+
+            if (anyFixApplied) break;
+        }
+
+        Console.WriteLine($"Iteration {iteration} complete. Fixes applied this iteration: {fixesThisIteration}");
+
+        if (anyFixApplied) continue;
+        Console.WriteLine("No more fixes found. Stopping.");
+        break;
+    }
+
+    return newSolution;
+}
+
 }

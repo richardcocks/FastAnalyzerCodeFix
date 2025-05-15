@@ -7,7 +7,7 @@ public static class Program
 {
 	public static async Task Main()
 	{
-		string[] args = [@"C:\Users\Rich\Documents\code\ExampleTestProject\ExampleTestProject.sln", "NUnit2005"];
+		string[] args = [@"C:\Users\Rich\Documents\code\ExampleTestProject\ExampleTestProject.sln", "NUnit2005", "NUnit2007"];
 		if (args.Length < 2)
 		{
 			Console.WriteLine("Usage: <solution-path> <diagnostic-id1,diagnostic-id2,...>");
@@ -23,7 +23,7 @@ public static class Program
 
 		Console.WriteLine("Loading solution...");
 		var solution = await workspace.OpenSolutionAsync(solutionPath);
-		var fixedSolution = await CodeFixApplier.ApplyCodeFixesAsync(solution,  diagnosticIds, CancellationToken.None);
+		var fixedSolution = await CodeFixApplier.ApplyAllDiagnosticsFixesAsync(solution,  diagnosticIds,10, CancellationToken.None);
 		workspace.TryApplyChanges(fixedSolution);
 		
 		Console.WriteLine("Done.");
