@@ -132,9 +132,9 @@ public static class CodeFixApplier
 
         var providersCache = new Dictionary<ProjectId, List<CodeFixProvider>>();
 
-        for (var iteration = 1; iteration <= maxIterations; iteration++)
+        for (int iteration = 1; iteration <= maxIterations; iteration++)
         {
-            var anyFixApplied = false;
+            bool anyFixAppliedThisIteration = false;
             int fixesThisIteration = 0;
 
             Console.WriteLine($"Starting iteration {iteration}...");
@@ -156,15 +156,14 @@ public static class CodeFixApplier
 
                 var relevantDiagnostics = diagnostics
                     .Where(d => diagnosticIdSet.Contains(d.Id) && d.Location.IsInSource)
+                    .OrderBy(d => d.Location.SourceSpan.Start) // Optional: keep order stable
                     .ToList();
 
                 if (!relevantDiagnostics.Any()) continue;
 
-                var projectSolution = newSolution;
-
                 foreach (var diagnostic in relevantDiagnostics)
                 {
-                    var doc = projectSolution.GetDocument(diagnostic.Location.SourceTree);
+                    var doc = newSolution.GetDocument(diagnostic.Location.SourceTree);
                     if (doc == null) continue;
 
                     foreach (var provider in providers)
@@ -189,29 +188,28 @@ public static class CodeFixApplier
                             if (op is ApplyChangesOperation applyChange)
                             {
                                 newSolution = applyChange.ChangedSolution;
-                                anyFixApplied = true;
+                                anyFixAppliedThisIteration = true;
                                 fixesThisIteration++;
-                                break;
+                                break; // break from operations
                             }
                         }
 
-                        if (anyFixApplied) break;
+                        break; // break from providers once a fix was applied
                     }
-
-                    if (anyFixApplied) break;
                 }
-
-                if (anyFixApplied) break;
             }
 
             Console.WriteLine($"Iteration {iteration} complete. Fixes applied this iteration: {fixesThisIteration}");
 
-            if (anyFixApplied) continue;
-            Console.WriteLine("No more fixes found. Stopping.");
-            break;
+            if (!anyFixAppliedThisIteration)
+            {
+                Console.WriteLine("No more fixes found. Done.");
+                break;
+            }
         }
 
         return newSolution;
     }
+
 
 }
