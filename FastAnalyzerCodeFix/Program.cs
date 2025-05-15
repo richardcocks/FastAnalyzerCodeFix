@@ -5,9 +5,8 @@ namespace FastAnalyzerCodeFix;
 
 public static class Program
 {
-	public static async Task Main()
+	public static async Task Main(string[] args)
 	{
-		string[] args = [@"C:\Users\Rich\Documents\code\ExampleTestProject\ExampleTestProject.sln", "NUnit2005", "NUnit2007"];
 		if (args.Length < 2)
 		{
 			Console.WriteLine("Usage: <solution-path> <diagnostic-id1,diagnostic-id2,...>");
