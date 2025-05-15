@@ -17,13 +17,6 @@ public static class CodeFixApplier
     {
         var idSet = diagnosticIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        Console.CancelKeyPress += (s, e) =>
-        {
-            Console.WriteLine("Cancellation requested...");
-            e.Cancel = true; // Prevent process termination
-            cancellationToken.ThrowIfCancellationRequested();
-        };
-
         foreach (var project in solution.Projects)
         {
             if (cancellationToken.IsCancellationRequested)
