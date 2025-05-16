@@ -76,8 +76,10 @@ public static class CodeFixApplier
 
             foreach (var diagnostic in relevantDiagnostics)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
                 var doc = currentSolution.GetDocument(diagnostic.Location.SourceTree);
                 if (doc == null) continue;
 
